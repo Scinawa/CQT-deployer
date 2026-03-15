@@ -1,0 +1,521 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import fcntl
+import importlib
+import json
+import logging
+import os
+from pathlib import Path
+import shutil
+import socket
+import subprocess
+import sys
+from datetime import datetime, timezone
+from typing import Any
+
+import requests
+
+
+LOGGER = logging.getLogger("cqt_reporting_runner")
+
+
+def configure_logging() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run the scheduled CQT-reporting workflow.")
+    parser.add_argument("--config", required=True, help="Path to the runner JSON config file.")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Run the report even if the stored state matches the remote state.",
+    )
+    return parser.parse_args()
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def save_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    with tmp_path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    tmp_path.replace(path)
+
+
+def tail_text(text: str, limit: int = 1500) -> str:
+    stripped = text.strip()
+    if len(stripped) <= limit:
+        return stripped
+    return stripped[-limit:]
+
+
+def prepare_environment() -> dict[str, str]:
+    env = os.environ.copy()
+    home = str(Path.home())
+    path_parts = [
+        f"{home}/.local/bin",
+        f"{home}/.cargo/bin",
+        env.get("PATH", ""),
+    ]
+    env["HOME"] = home
+    env["PATH"] = ":".join(part for part in path_parts if part)
+    env["PYTHONUNBUFFERED"] = "1"
+    return env
+
+
+def run_command(
+    command: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    description: str,
+) -> subprocess.CompletedProcess[str]:
+    LOGGER.info("Running %s: %s", description, " ".join(command))
+    result = subprocess.run(
+        command,
+        cwd=str(cwd),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.stdout.strip():
+        LOGGER.info("%s stdout:\n%s", description, tail_text(result.stdout, limit=2500))
+    if result.stderr.strip():
+        LOGGER.info("%s stderr:\n%s", description, tail_text(result.stderr, limit=2500))
+    if result.returncode != 0:
+        summary = tail_text(result.stderr or result.stdout or "No command output captured.")
+        raise RuntimeError(f"{description} failed with exit code {result.returncode}: {summary}")
+    return result
+
+
+def tracked_status(project_dir: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=no"],
+        cwd=str(project_dir),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def parse_porcelain_paths(output: str) -> list[str]:
+    paths: list[str] = []
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        path = line[3:]
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1]
+        paths.append(path)
+    return paths
+
+
+def ensure_only_restorable_changes(
+    project_dir: Path,
+    env: dict[str, str],
+    allowed_paths: list[str],
+    *,
+    failure_prefix: str,
+    restore_description: str,
+) -> None:
+    result = tracked_status(project_dir, env)
+    if result.returncode != 0:
+        raise RuntimeError(f"Unable to inspect git status: {tail_text(result.stderr or result.stdout)}")
+
+    dirty_paths = parse_porcelain_paths(result.stdout)
+    if dirty_paths:
+        allowed_set = set(allowed_paths)
+        restorable_paths = [path for path in dirty_paths if path in allowed_set]
+        blocking_paths = [path for path in dirty_paths if path not in allowed_set]
+
+        if blocking_paths:
+            raise RuntimeError(f"{failure_prefix}\n{tail_text(result.stdout)}")
+
+        run_command(
+            ["git", "restore", "--"] + restorable_paths,
+            cwd=project_dir,
+            env=env,
+            description=restore_description,
+        )
+
+        result = tracked_status(project_dir, env)
+        if result.returncode != 0:
+            raise RuntimeError(f"Unable to inspect git status: {tail_text(result.stderr or result.stdout)}")
+        if not result.stdout.strip():
+            return
+
+        raise RuntimeError(f"{failure_prefix}\n{tail_text(result.stdout)}")
+
+
+def ensure_clean_checkout(config: dict[str, Any], project_dir: Path, env: dict[str, str]) -> None:
+    ensure_only_restorable_changes(
+        project_dir,
+        env,
+        list(config.get("tracked_generated_paths", [])),
+        failure_prefix="The repository contains tracked local changes before the scheduled run:",
+        restore_description="restore generated artifacts",
+    )
+
+
+def restore_tracked_paths_if_dirty(
+    project_dir: Path,
+    env: dict[str, str],
+    paths: list[str],
+    *,
+    description: str,
+) -> None:
+    if not paths:
+        return
+
+    result = subprocess.run(
+        ["git", "status", "--porcelain", "--"] + paths,
+        cwd=str(project_dir),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Unable to inspect generated files: {tail_text(result.stderr or result.stdout)}")
+    if result.stdout.strip():
+        run_command(["git", "restore", "--"] + paths, cwd=project_dir, env=env, description=description)
+
+
+def sync_checkout(config: dict[str, Any], project_dir: Path, env: dict[str, str]) -> None:
+    ensure_clean_checkout(config, project_dir, env)
+
+    run_command(
+        ["git", "pull", "--ff-only", "origin", config["branch"]],
+        cwd=project_dir,
+        env=env,
+        description="repository update",
+    )
+
+    uv_binary = Path.home() / ".local" / "bin" / "uv"
+    run_command(
+        [str(uv_binary), "sync", "--frozen", "--python", config["python_version"]],
+        cwd=project_dir,
+        env=env,
+        description="Python environment sync",
+    )
+
+
+def load_project_client(project_dir: Path) -> Any:
+    sys.path.insert(0, str(project_dir))
+    importlib.import_module("download")
+    return importlib.import_module("clientdb.client")
+
+
+def fetch_remote_state(project_dir: Path) -> dict[str, Any]:
+    client = load_project_client(project_dir)
+    latest_meta = client.calibrations_get_latest()
+    if not latest_meta:
+        raise RuntimeError("No calibrations are available from the remote data service.")
+
+    latest_hash = latest_meta["hashID"]
+    latest_results = client.results_list(hashID=latest_hash)
+    latest_run = next((row.get("run_id") for row in latest_results if row.get("run_id")), None)
+    if not latest_run:
+        raise RuntimeError(f"No run_id was returned for the latest calibration {latest_hash}.")
+
+    best_hash, best_run, best_created_at = client.get_best_run()
+    return {
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "latest": {
+            "hash_id": latest_hash,
+            "run_id": latest_run,
+            "created_at": latest_meta.get("created_at"),
+        },
+        "best": {
+            "hash_id": best_hash,
+            "run_id": best_run,
+            "created_at": best_created_at,
+        },
+    }
+
+
+def summarize_state(state: dict[str, Any]) -> str:
+    latest = state["latest"]
+    best = state["best"]
+    return (
+        f"latest={latest['hash_id']}/{latest['run_id']} "
+        f"best={best['hash_id']}/{best['run_id']}"
+    )
+
+
+def same_data_state(previous: dict[str, Any] | None, current: dict[str, Any]) -> bool:
+    if not previous:
+        return False
+    return (
+        previous.get("latest", {}).get("hash_id") == current["latest"]["hash_id"]
+        and previous.get("latest", {}).get("run_id") == current["latest"]["run_id"]
+        and previous.get("best", {}).get("hash_id") == current["best"]["hash_id"]
+        and previous.get("best", {}).get("run_id") == current["best"]["run_id"]
+    )
+
+
+def ensure_publish_worktree(config: dict[str, Any], project_dir: Path, env: dict[str, str]) -> Path:
+    publish_cfg = config["publish"]
+    branch = publish_cfg["branch"]
+    worktree_dir = Path(publish_cfg["worktree_dir"])
+
+    run_command(
+        ["git", "fetch", "origin", branch],
+        cwd=project_dir,
+        env=env,
+        description=f"fetch {branch} branch",
+    )
+
+    if (worktree_dir / ".git").exists():
+        ensure_only_restorable_changes(
+            worktree_dir,
+            env,
+            [publish_cfg["target_path"]],
+            failure_prefix=f"The {branch} publish worktree contains tracked local changes:",
+            restore_description=f"restore {branch} artifact",
+        )
+        run_command(
+            ["git", "pull", "--ff-only", "origin", branch],
+            cwd=worktree_dir,
+            env=env,
+            description=f"update {branch} worktree",
+        )
+        return worktree_dir
+
+    worktree_dir.parent.mkdir(parents=True, exist_ok=True)
+    if worktree_dir.exists():
+        if any(worktree_dir.iterdir()):
+            raise RuntimeError(
+                f"Publish worktree path exists but is not a git worktree: {worktree_dir}"
+            )
+        worktree_dir.rmdir()
+
+    run_command(
+        ["git", "worktree", "add", "-B", branch, str(worktree_dir), f"origin/{branch}"],
+        cwd=project_dir,
+        env=env,
+        description=f"create {branch} worktree",
+    )
+    return worktree_dir
+
+
+def publish_generated_report(
+    config: dict[str, Any],
+    project_dir: Path,
+    env: dict[str, str],
+    current_state: dict[str, Any],
+) -> dict[str, Any]:
+    publish_cfg = config.get("publish", {})
+    if not publish_cfg.get("enabled", False):
+        return {"published": False, "pushed": False, "changed": False, "commit_message": ""}
+
+    worktree_dir = ensure_publish_worktree(config, project_dir, env)
+    source_path = project_dir / publish_cfg["source_path"]
+    if not source_path.exists():
+        raise RuntimeError(f"Generated report file does not exist: {source_path}")
+
+    target_rel_path = publish_cfg["target_path"]
+    target_path = worktree_dir / target_rel_path
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source_path, target_path)
+
+    status_command = ["git", "status", "--porcelain", "--", target_rel_path]
+    status = subprocess.run(
+        status_command,
+        cwd=str(worktree_dir),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if status.returncode != 0:
+        raise RuntimeError(
+            f"Unable to inspect {publish_cfg['branch']} publish changes: "
+            f"{tail_text(status.stderr or status.stdout)}"
+        )
+    if not status.stdout.strip():
+        return {"published": False, "pushed": False, "changed": False, "commit_message": ""}
+
+    run_command(
+        ["git", "add", "--", target_rel_path],
+        cwd=worktree_dir,
+        env=env,
+        description=f"stage {publish_cfg['branch']} artifact",
+    )
+
+    latest = current_state["latest"]
+    best = current_state["best"]
+    commit_message = (
+        f"Publish {target_rel_path}: "
+        f"latest {latest['hash_id'][:10]}/{latest['run_id']} "
+        f"best {best['hash_id'][:10]}/{best['run_id']}"
+    )
+
+    run_command(
+        [
+            "git",
+            "-c",
+            f"user.name={config['git_commit_name']}",
+            "-c",
+            f"user.email={config['git_commit_email']}",
+            "commit",
+            "-m",
+            commit_message,
+        ],
+        cwd=worktree_dir,
+        env=env,
+        description=f"commit {publish_cfg['branch']} artifact",
+    )
+
+    pushed = False
+    if config.get("git_push_enabled", True):
+        run_command(
+            ["git", "push", "origin", publish_cfg["branch"]],
+            cwd=worktree_dir,
+            env=env,
+            description=f"push {publish_cfg['branch']} artifact",
+        )
+        pushed = True
+
+    return {
+        "published": True,
+        "pushed": pushed,
+        "changed": True,
+        "commit_message": commit_message,
+    }
+
+
+def send_telegram(config: dict[str, Any], message: str) -> None:
+    telegram_cfg = config.get("telegram", {})
+    if not telegram_cfg.get("enabled", False):
+        return
+
+    bot_token = telegram_cfg.get("bot_token", "")
+    chat_id = telegram_cfg.get("chat_id", "")
+    if not bot_token or bot_token == "CHANGE_ME" or not chat_id or chat_id == "CHANGE_ME":
+        LOGGER.warning("Telegram is enabled but credentials are still placeholders.")
+        return
+
+    response = requests.post(
+        f"https://api.telegram.org/bot{bot_token}/sendMessage",
+        json={"chat_id": chat_id, "text": message},
+        timeout=30,
+    )
+    response.raise_for_status()
+
+
+def notify_failure(config: dict[str, Any], message: str) -> None:
+    try:
+        send_telegram(config, message)
+    except Exception as exc:  # pragma: no cover - best effort after failure
+        LOGGER.error("Telegram notification failed after runner error: %s", exc)
+
+
+def with_lock(lock_path: Path):
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("w", encoding="utf-8")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as exc:  # pragma: no cover - only hit on overlap
+        handle.close()
+        raise RuntimeError(f"Another runner process is already active: {lock_path}") from exc
+    return handle
+
+
+def main() -> int:
+    configure_logging()
+    args = parse_args()
+    config_path = Path(args.config)
+    config = load_json(config_path)
+    project_dir = Path(config["project_dir"])
+    state_path = Path(config["state_path"])
+    hostname = socket.gethostname()
+
+    lock_handle = with_lock(Path(config["lock_path"]))
+    env = prepare_environment()
+    try:
+        sync_checkout(config, project_dir, env)
+
+        current_state = fetch_remote_state(project_dir)
+        previous_state = load_json(state_path) if state_path.exists() else None
+        change_reason = "forced run" if args.force else "new data detected"
+
+        if not args.force and same_data_state(previous_state, current_state):
+            message = (
+                f"[{hostname}] CQT-reporting check completed.\n"
+                "No new data was detected.\n"
+                f"{summarize_state(current_state)}"
+            )
+            LOGGER.info(message.replace("\n", " "))
+            send_telegram(config, message)
+            return 0
+
+        report_env = env.copy()
+        report_env.update(
+            {str(key): str(value) for key, value in config.get("report_environment", {}).items()}
+        )
+
+        run_command(
+            list(config["report_command"]),
+            cwd=project_dir,
+            env=report_env,
+            description="report generation",
+        )
+
+        publish_result = publish_generated_report(config, project_dir, env, current_state)
+        restore_tracked_paths_if_dirty(
+            project_dir,
+            env,
+            list(config.get("tracked_generated_paths", [])),
+            description="restore main tracked artifacts",
+        )
+        save_json(state_path, current_state)
+
+        publish_cfg = config.get("publish", {})
+        target_path = publish_cfg.get("target_path", "report.pdf")
+        branch = publish_cfg.get("branch", "gh-pages")
+        if publish_result["published"]:
+            git_summary = f"Published {target_path} to {branch}."
+            if not publish_result["pushed"]:
+                git_summary = f"Committed {target_path} to {branch} locally."
+        elif publish_cfg.get("enabled", False):
+            git_summary = f"Generated report matched the existing {branch} artifact."
+        else:
+            git_summary = "Report generation finished; branch publishing is disabled."
+
+        message = (
+            f"[{hostname}] CQT-reporting run succeeded.\n"
+            f"Reason: {change_reason}.\n"
+            f"{summarize_state(current_state)}\n"
+            f"{git_summary}"
+        )
+        LOGGER.info(message.replace("\n", " "))
+        send_telegram(config, message)
+        return 0
+    except Exception as exc:
+        LOGGER.exception("CQT-reporting runner failed")
+        failure_message = (
+            f"[{hostname}] CQT-reporting run failed.\n"
+            f"Error: {exc}"
+        )
+        notify_failure(config, failure_message)
+        return 1
+    finally:
+        lock_handle.close()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,5 @@
+- name: Bootstrap CQT-reporting
+  hosts: cqt_reporting
+  become: true
+  roles:
+    - cqt_reporting

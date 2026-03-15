@@ -1,0 +1,25 @@
+{
+  "project_dir": "{{ cqt_reporting_project_dir }}",
+  "branch": "{{ cqt_reporting_repo_version }}",
+  "python_version": "{{ cqt_reporting_python_version }}",
+  "state_path": "{{ cqt_reporting_state_path }}",
+  "lock_path": "{{ cqt_reporting_lock_path }}",
+  "report_command": {{ cqt_reporting_report_command | to_json }},
+  "report_environment": {{ cqt_reporting_report_environment | to_json }},
+  "tracked_generated_paths": {{ cqt_reporting_tracked_generated_paths | to_json }},
+  "publish": {
+    "enabled": {{ cqt_reporting_publish_enabled | to_json }},
+    "branch": "{{ cqt_reporting_publish_branch }}",
+    "worktree_dir": "{{ cqt_reporting_publish_worktree_dir }}",
+    "source_path": "{{ cqt_reporting_publish_source_path }}",
+    "target_path": "{{ cqt_reporting_publish_target_path }}"
+  },
+  "git_commit_name": "{{ cqt_reporting_git_commit_name }}",
+  "git_commit_email": "{{ cqt_reporting_git_commit_email }}",
+  "git_push_enabled": {{ cqt_reporting_git_push_enabled | to_json }},
+  "telegram": {
+    "enabled": {{ cqt_reporting_telegram_enabled | to_json }},
+    "bot_token": "{{ cqt_reporting_telegram_bot_token }}",
+    "chat_id": "{{ cqt_reporting_telegram_chat_id }}"
+  }
+}

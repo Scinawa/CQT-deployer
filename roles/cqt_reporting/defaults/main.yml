@@ -1,0 +1,86 @@
+---
+cqt_reporting_repo_url: "git@github.com:Scinawa/CQT-reporting.git"
+cqt_reporting_repo_version: "main"
+cqt_reporting_project_dir: "/opt/cqt-reporting"
+
+cqt_reporting_app_user: "cqt-deploy"
+cqt_reporting_app_home: "/home/{{ cqt_reporting_app_user }}"
+cqt_reporting_app_group: "{{ cqt_reporting_app_user }}"
+cqt_reporting_python_version: "3.12"
+cqt_reporting_timezone: "Asia/Singapore"
+
+cqt_reporting_packages:
+  - tzdata
+  - texlive-full
+  - texlive-latex-extra
+  - texlive-fonts-recommended
+  - texlive-fonts-extra
+  - git
+  - python3
+  - python3-pip
+  - openssh-client
+  - curl
+
+cqt_reporting_managed_users:
+  - name: "elis"
+    comment: "CQT reporting administrator"
+    shell: "/bin/bash"
+  - name: "cqt-deploy"
+    comment: "CQT reporting deployment user"
+    shell: "/bin/bash"
+  - name: "sergi"
+    comment: "CQT reporting administrator"
+    shell: "/bin/bash"
+
+cqt_reporting_sudo_users:
+  - "ubuntu"
+  - "elis"
+  - "sergi"
+cqt_reporting_sudoers_path: "/etc/sudoers.d/cqt-reporting-admins"
+
+cqt_reporting_deploy_key_path: "{{ cqt_reporting_app_home }}/.ssh/id_rsa"
+cqt_reporting_known_hosts_path: "{{ cqt_reporting_app_home }}/.ssh/known_hosts"
+
+cqt_reporting_runner_dir: "/usr/local/lib/cqt-reporting"
+cqt_reporting_runner_script_path: "{{ cqt_reporting_runner_dir }}/cqt_reporting_runner.py"
+cqt_reporting_runner_config_dir: "/etc/cqt-reporting"
+cqt_reporting_runner_config_path: "{{ cqt_reporting_runner_config_dir }}/runner.json"
+
+cqt_reporting_state_dir: "/var/lib/cqt-reporting"
+cqt_reporting_state_path: "{{ cqt_reporting_state_dir }}/state.json"
+cqt_reporting_lock_path: "{{ cqt_reporting_state_dir }}/runner.lock"
+
+cqt_reporting_log_dir: "/var/log/cqt-reporting"
+cqt_reporting_log_file: "{{ cqt_reporting_log_dir }}/runner.log"
+
+cqt_reporting_cron_name: "Daily CQT Reporting Check"
+cqt_reporting_cron_minute: "0"
+cqt_reporting_cron_hour: "16"
+
+cqt_reporting_telegram_enabled: true
+cqt_reporting_telegram_bot_token: ""
+cqt_reporting_telegram_chat_id: ""
+
+cqt_reporting_git_commit_name: "CQT Reporting Bot"
+cqt_reporting_git_commit_email: "cqt-reporting-bot@example.com"
+cqt_reporting_git_push_enabled: true
+cqt_reporting_tracked_generated_paths:
+  - "report.tex"
+  - "report.pdf"
+  - "reports/latest_report.pdf"
+
+cqt_reporting_publish_enabled: true
+cqt_reporting_publish_branch: "gh-pages"
+cqt_reporting_publish_worktree_dir: "{{ cqt_reporting_state_dir }}/gh-pages-worktree"
+cqt_reporting_publish_source_path: "report.pdf"
+cqt_reporting_publish_target_path: "report.pdf"
+
+cqt_reporting_report_command:
+  - "bash"
+  - "scripts/report.sh"
+  - "best-latest-pdf"
+
+# report.sh currently emits an unsupported --no-show-errors flag when
+# SHOW_ERRORS=false, so default to a safe environment override here.
+cqt_reporting_report_environment:
+  SHOW_ERRORS: "true"

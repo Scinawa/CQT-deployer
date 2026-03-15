@@ -1,0 +1,248 @@
+---
+- name: Validate Telegram configuration
+  ansible.builtin.assert:
+    that:
+      - >-
+        (not cqt_reporting_telegram_enabled) or
+        (
+          (cqt_reporting_telegram_bot_token | length > 0) and
+          (cqt_reporting_telegram_bot_token != "CHANGE_ME") and
+          (cqt_reporting_telegram_chat_id | length > 0) and
+          (cqt_reporting_telegram_chat_id != "CHANGE_ME")
+        )
+    fail_msg: >-
+      Set cqt_reporting_telegram_bot_token and cqt_reporting_telegram_chat_id
+      in inventory/host_vars/cqt-reporting/vault.yml before running the playbook.
+
+- name: Update apt cache
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Install CQT-reporting system packages
+  ansible.builtin.apt:
+    name: "{{ cqt_reporting_packages }}"
+    state: present
+
+- name: Check configured timezone data exists
+  ansible.builtin.stat:
+    path: "/usr/share/zoneinfo/{{ cqt_reporting_timezone }}"
+  register: cqt_reporting_timezone_data
+
+- name: Validate configured timezone
+  ansible.builtin.assert:
+    that:
+      - cqt_reporting_timezone_data.stat.exists
+    fail_msg: >-
+      Configured timezone {{ cqt_reporting_timezone }} was not found under
+      /usr/share/zoneinfo.
+
+- name: Set system timezone
+  ansible.builtin.file:
+    src: "/usr/share/zoneinfo/{{ cqt_reporting_timezone }}"
+    dest: "/etc/localtime"
+    state: link
+    force: true
+
+- name: Persist system timezone name
+  ansible.builtin.copy:
+    content: "{{ cqt_reporting_timezone }}\n"
+    dest: "/etc/timezone"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Ensure managed users exist
+  ansible.builtin.user:
+    name: "{{ item.name }}"
+    comment: "{{ item.comment | default(omit) }}"
+    shell: "{{ item.shell | default('/bin/bash') }}"
+    create_home: true
+    password_lock: true
+    state: present
+  loop: "{{ cqt_reporting_managed_users }}"
+
+- name: Install sudoers policy for admin users
+  ansible.builtin.template:
+    src: cqt-reporting-sudoers.j2
+    dest: "{{ cqt_reporting_sudoers_path }}"
+    owner: root
+    group: root
+    mode: "0440"
+    validate: "/usr/sbin/visudo -cf %s"
+
+- name: Ensure CQT-reporting directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ cqt_reporting_project_dir }}"
+      owner: "{{ cqt_reporting_app_user }}"
+      group: "{{ cqt_reporting_app_group }}"
+      mode: "0755"
+    - path: "{{ cqt_reporting_runner_dir }}"
+      owner: "root"
+      group: "root"
+      mode: "0755"
+    - path: "{{ cqt_reporting_runner_config_dir }}"
+      owner: "root"
+      group: "{{ cqt_reporting_app_group }}"
+      mode: "0750"
+    - path: "{{ cqt_reporting_state_dir }}"
+      owner: "{{ cqt_reporting_app_user }}"
+      group: "{{ cqt_reporting_app_group }}"
+      mode: "0750"
+    - path: "{{ cqt_reporting_log_dir }}"
+      owner: "{{ cqt_reporting_app_user }}"
+      group: "{{ cqt_reporting_app_group }}"
+      mode: "0755"
+
+- name: Normalize ownership of the CQT-reporting checkout
+  ansible.builtin.file:
+    path: "{{ cqt_reporting_project_dir }}"
+    state: directory
+    owner: "{{ cqt_reporting_app_user }}"
+    group: "{{ cqt_reporting_app_group }}"
+    recurse: true
+
+- name: Ensure deployment user SSH directory exists
+  ansible.builtin.file:
+    path: "{{ cqt_reporting_app_home }}/.ssh"
+    state: directory
+    owner: "{{ cqt_reporting_app_user }}"
+    group: "{{ cqt_reporting_app_group }}"
+    mode: "0700"
+
+- name: Generate GitHub deploy key for the deployment user
+  ansible.builtin.command: >-
+    ssh-keygen -t rsa -b 4096
+    -C {{ cqt_reporting_app_user }}@cqt-reporting
+    -N ''
+    -f {{ cqt_reporting_deploy_key_path }}
+  args:
+    creates: "{{ cqt_reporting_deploy_key_path }}"
+  become_user: "{{ cqt_reporting_app_user }}"
+  register: cqt_reporting_ssh_key
+
+- name: Read generated deploy key
+  ansible.builtin.slurp:
+    src: "{{ cqt_reporting_deploy_key_path }}.pub"
+  register: cqt_reporting_public_key
+
+- name: Show deploy key for GitHub repository access
+  ansible.builtin.pause:
+    prompt: |
+      ========================================
+      Add this deploy key to the CQT-reporting repository:
+
+      {{ cqt_reporting_public_key.content | b64decode }}
+
+      URL: https://github.com/Scinawa/CQT-reporting/settings/keys
+      Title: CQT Reporting Server
+      Allow write access: yes
+
+      Press ENTER once the key has been added.
+      ========================================
+  when: cqt_reporting_ssh_key.changed
+
+- name: Add GitHub to known_hosts for the deployment user
+  ansible.builtin.known_hosts:
+    name: "github.com"
+    key: "{{ lookup('pipe', 'ssh-keyscan -H -t ed25519 github.com 2>/dev/null') }}"
+    path: "{{ cqt_reporting_known_hosts_path }}"
+    state: present
+  become_user: "{{ cqt_reporting_app_user }}"
+
+- name: Check whether the CQT-reporting repository already exists
+  ansible.builtin.stat:
+    path: "{{ cqt_reporting_project_dir }}/.git"
+  register: cqt_reporting_git_dir
+
+- name: Clone the CQT-reporting repository on first bootstrap
+  ansible.builtin.git:
+    repo: "{{ cqt_reporting_repo_url }}"
+    dest: "{{ cqt_reporting_project_dir }}"
+    version: "{{ cqt_reporting_repo_version }}"
+    key_file: "{{ cqt_reporting_deploy_key_path }}"
+    accept_hostkey: true
+    update: false
+  become_user: "{{ cqt_reporting_app_user }}"
+  environment:
+    HOME: "{{ cqt_reporting_app_home }}"
+  when: not cqt_reporting_git_dir.stat.exists
+
+- name: Check whether uv is already installed
+  ansible.builtin.stat:
+    path: "{{ cqt_reporting_app_home }}/.local/bin/uv"
+  register: cqt_reporting_uv_stat
+
+- name: Install uv for the deployment user
+  ansible.builtin.shell: "curl -LsSf https://astral.sh/uv/install.sh | sh"
+  args:
+    executable: /bin/bash
+  become_user: "{{ cqt_reporting_app_user }}"
+  environment:
+    HOME: "{{ cqt_reporting_app_home }}"
+  when: not cqt_reporting_uv_stat.stat.exists
+
+- name: Ensure the required Python version is available through uv
+  ansible.builtin.command: >-
+    {{ cqt_reporting_app_home }}/.local/bin/uv python install
+    {{ cqt_reporting_python_version }}
+  become_user: "{{ cqt_reporting_app_user }}"
+  environment:
+    HOME: "{{ cqt_reporting_app_home }}"
+  changed_when: false
+
+- name: Sync Python dependencies with uv
+  ansible.builtin.command: >-
+    {{ cqt_reporting_app_home }}/.local/bin/uv sync
+    --frozen
+    --python {{ cqt_reporting_python_version }}
+  args:
+    chdir: "{{ cqt_reporting_project_dir }}"
+  become_user: "{{ cqt_reporting_app_user }}"
+  environment:
+    HOME: "{{ cqt_reporting_app_home }}"
+    PATH: "{{ cqt_reporting_app_home }}/.local/bin:{{ ansible_env.PATH | default('/usr/local/bin:/usr/bin:/bin') }}"
+  changed_when: false
+
+- name: Deploy runner configuration
+  ansible.builtin.template:
+    src: cqt-reporting-runner-config.json.j2
+    dest: "{{ cqt_reporting_runner_config_path }}"
+    owner: root
+    group: "{{ cqt_reporting_app_group }}"
+    mode: "0640"
+
+- name: Deploy the CQT-reporting runner script
+  ansible.builtin.template:
+    src: cqt-reporting-runner.py.j2
+    dest: "{{ cqt_reporting_runner_script_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ensure runner log file exists
+  ansible.builtin.file:
+    path: "{{ cqt_reporting_log_file }}"
+    state: touch
+    owner: "{{ cqt_reporting_app_user }}"
+    group: "{{ cqt_reporting_app_group }}"
+    mode: "0644"
+
+- name: Schedule the daily CQT-reporting runner
+  ansible.builtin.cron:
+    name: "{{ cqt_reporting_cron_name }}"
+    user: "{{ cqt_reporting_app_user }}"
+    minute: "{{ cqt_reporting_cron_minute }}"
+    hour: "{{ cqt_reporting_cron_hour }}"
+    job: >-
+      {{ cqt_reporting_project_dir }}/.venv/bin/python
+      {{ cqt_reporting_runner_script_path }}
+      --config {{ cqt_reporting_runner_config_path }}
+      >> {{ cqt_reporting_log_file }} 2>&1
+    state: present
