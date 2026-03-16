@@ -417,11 +417,33 @@ def send_telegram(config: dict[str, Any], message: str) -> None:
     response.raise_for_status()
 
 
-def notify_failure(config: dict[str, Any], message: str) -> None:
-    try:
-        send_telegram(config, message)
-    except Exception as exc:  # pragma: no cover - best effort after failure
-        LOGGER.error("Telegram notification failed after runner error: %s", exc)
+def send_slack(config: dict[str, Any], message: str) -> None:
+    slack_cfg = config.get("slack", {})
+    if not slack_cfg.get("enabled", False):
+        return
+
+    webhook_url = slack_cfg.get("webhook_url", "")
+    if not webhook_url or webhook_url == "CHANGE_ME":
+        LOGGER.warning("Slack is enabled but the webhook URL is still a placeholder.")
+        return
+
+    response = requests.post(
+        webhook_url,
+        json={"text": message},
+        timeout=30,
+    )
+    response.raise_for_status()
+
+
+def send_notifications(config: dict[str, Any], message: str) -> None:
+    for channel_name, sender in (
+        ("Telegram", send_telegram),
+        ("Slack", send_slack),
+    ):
+        try:
+            sender(config, message)
+        except Exception as exc:  # pragma: no cover - network dependent
+            LOGGER.error("%s notification failed: %s", channel_name, exc)
 
 
 def with_lock(lock_path: Path):
@@ -460,7 +482,7 @@ def main() -> int:
                 f"{summarize_state(current_state)}"
             )
             LOGGER.info(message.replace("\n", " "))
-            send_telegram(config, message)
+            send_notifications(config, message)
             return 0
 
         report_env = env.copy()
@@ -503,7 +525,7 @@ def main() -> int:
             f"{git_summary}"
         )
         LOGGER.info(message.replace("\n", " "))
-        send_telegram(config, message)
+        send_notifications(config, message)
         return 0
     except Exception as exc:
         LOGGER.exception("CQT-reporting runner failed")
@@ -511,7 +533,7 @@ def main() -> int:
             f"[{hostname}] CQT-reporting run failed.\n"
             f"Error: {exc}"
         )
-        notify_failure(config, failure_message)
+        send_notifications(config, failure_message)
         return 1
     finally:
         lock_handle.close()

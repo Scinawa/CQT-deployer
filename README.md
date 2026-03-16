@@ -3,7 +3,7 @@
 Ansible automation for CQT deployment (reporting and experiments). The first implemented target is
 `CQT-reporting`, which bootstraps the reporting host, deploys
 [`Scinawa/CQT-reporting`](https://github.com/Scinawa/CQT-reporting), and installs
-a daily scheduled runner with Telegram notifications.
+a daily scheduled runner with Telegram and Slack notifications.
 
 ## Repository Layout
 
@@ -28,6 +28,8 @@ CQT-deployer/
 - creates the host users `elis`, `cqt-deploy`, and `sergi`
 - grants sudo through `/etc/sudoers.d/cqt-reporting-admins` to `ubuntu`,
   `elis`, and `sergi`, while keeping `cqt-deploy` out of sudo
+- ensures `/home/ubuntu/.ssh/authorized_keys` contains the expected bootstrap
+  access keys
 - clones `git@github.com:Scinawa/CQT-reporting.git` into `/opt/cqt-reporting`
   as `cqt-deploy`
 - generates a GitHub deploy key for `cqt-deploy` and pauses on the first run so
@@ -37,19 +39,24 @@ CQT-deployer/
 - has the wrapper pull the repo, sync the Python environment, check whether the
   latest or best remote run changed, generate reports only when new data exists,
   publish the generated `report.pdf` to the repository `gh-pages` branch, and
-  send the outcome to Telegram
+  send the outcome to Telegram and Slack
 
-The role creates the user accounts, but it does not manage login SSH keys for
-`elis` or `sergi`.
+The role creates the user accounts and manages the bootstrap `ubuntu` account's
+`authorized_keys`, but it does not manage login SSH keys for `elis` or `sergi`.
 
 ## Configuration
 
 Shared, non-secret configuration lives in
 `roles/cqt_reporting/defaults/main.yml`.
 
-Only the Telegram secrets live in the vaulted host vars file:
+Notification secrets can live in the vaulted host vars file:
 
 - `inventory/host_vars/cqt-reporting/vault.yml`
+
+There is also a local-only ignored override file for the Slack webhook in this
+workspace:
+
+- `inventory/host_vars/cqt-reporting/slack.local.yml`
 
 The checked-in vault currently contains placeholder `CHANGE_ME` values so the
 repo has the right structure without storing real secrets in plain text.
@@ -57,7 +64,7 @@ repo has the right structure without storing real secrets in plain text.
 Before the first deployment:
 
 1. Edit `inventory/host_vars/cqt-reporting/vault.yml` with `ansible-vault edit`.
-2. Replace both placeholder values with the real Telegram bot token and chat ID.
+2. Replace the placeholder notification secrets with the real values you want to use.
 3. Rekey the vault if you do not want to keep the temporary placeholder password.
 
 The current temporary vault password for the sample file is `change-me`.
@@ -72,6 +79,8 @@ If you need host-specific non-secret overrides later, add
 - `cqt_reporting_report_environment`
 - `cqt_reporting_publish_branch`
 - `cqt_reporting_publish_target_path`
+- `cqt_reporting_slack_enabled`
+- `cqt_reporting_ubuntu_authorized_keys`
 
 The default report command is:
 

@@ -21,5 +21,9 @@
     "enabled": {{ cqt_reporting_telegram_enabled | to_json }},
     "bot_token": "{{ cqt_reporting_telegram_bot_token }}",
     "chat_id": "{{ cqt_reporting_telegram_chat_id }}"
+  },
+  "slack": {
+    "enabled": {{ cqt_reporting_slack_enabled | to_json }},
+    "webhook_url": "{{ cqt_reporting_slack_webhook_url }}"
   }
 }

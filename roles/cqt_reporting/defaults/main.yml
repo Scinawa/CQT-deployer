@@ -37,6 +37,12 @@ cqt_reporting_sudo_users:
   - "elis"
   - "sergi"
 cqt_reporting_sudoers_path: "/etc/sudoers.d/cqt-reporting-admins"
+cqt_reporting_ubuntu_home: "/home/ubuntu"
+cqt_reporting_ubuntu_authorized_keys:
+  - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICHA7m5Qr6vVd5IaZB9wk/51rsVIm20t9ZrUW5eOdPrj scinawa-cqt"
+  - "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQCwMOfsoewJNRPKGdJvHcJ22YLSeJPo30p9MASh+TClwKFdAzYE+p/Bg+5tIFU0wdEhTA9BwryewRr+sk37SYAYXeoOyczJFmGrgEy5On/YeDsaNSrV/z9llI2dH1ajTo48HPGjfrRH9Kn9Cxf/2IS12GUnII93Ed5Eqit/i/NatQyEENvk7bikduL8+LeXE0DfXYzF6rpDzHsinqkt+6jHHe9iER9VA2S7xHwr45lbAYr1yOhXZz4r3MDXcsfpwuo0pfCdTBbels7WVKgYt5t3NIO+n8UQ1lmGK7RoEetRQutImZNMwLTfg7ZETIVlz2IhbeLXwBMSLCGFoSLgeZNZmRUg36VUwpw+214n62v484kId1aAXVsx6y9HL6HFKNGR/exQq6Z7LugKJHeXS8kQ2TvDCdOZ6xLtQ2k31XNs7/C/hzFcL2SffFmTJ+0STLtp+pTWhtwriTEHv6IM9nZJq+npH+9WWnwOZiaTLAkwZJNZMc/mptRESux8RZ/9WAOBV5r6QTZvi/s5q27HL+Z8HyG8UOT/SwY9H91ndXVdt1a/1N7a8d8iq0hsKtmCl+YOt3i1/eTKINo/e96Vrofk2O1xC3WBUkdZIb3RcpUSYC6+qzbHOuQA9Zlc13PlFHribPJBgxJBbELk1uuau3PhVpMmJoV6duGk8mkbdg6umQ== sergi@Sergis-MacBook-Pro.local"
+  - "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQC4EU4wM5SMnm9gwY3F+oDDkjlaoOpmasWqD+xGXxjyJwWojAUEsjvYvTnBvxVXXdla7Tjyl9oXJq1s9g8RHAgS+8xu0mYWcTV3xUU7And0CvsmOHOZUfKH+65WNMO/kSPZPcVvNwMgUxOlS3ejWEH+gTN5icTCau7+e+uedsM7EGoL70e2X9Nqip2nyU60nPBvOgLpqyhewfYeVI0AYptGINwTpwlD8r5zynGK3tcAzlrmPVlmcZQncbPpUUbXtW+hnBpmxCC6HhPldTjjrH0HiF0Tpj47qGhWPaS1Kdegj0a77rGEEZwP9jrnE3ENUBLMn+lqJtlTvFwcvp6sIVVtyoC5RJB6E9iYmwmsSgm2F51YL6WqLTsk3b1+CBgh1L2JZ1Qfw7SQNmecpDp62vnR+jBaUro1HXxlnfdjJefC75LGRs+PrsSI08iaOg/hHQueX2Pdw2qlV6ZZ8lVSv0/Hi7o89zYsn8JJ99KI3TZNE9ipST7UhKbbnpw5THbFxJM4MWW8CGcIhbK5kK2H+qIcXSGxRIE1E1PCiyOrZXAduhwFkStD3pWE3NfZZgC/0uMu4mu8aBTgAtlLFMW9pg0Tr9svLxlEujsMRj8I9qy0F8luzRkvMt4HdIfC1oQ2XppmcBfl+JqqAU12Z9WSpfupn70ZsyG/do0ubHdanO0SDQ== scinawa@Ale-MBA-3.local"
+  - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAwHFxzE9HKWjlfJYGa3O5iRFRR8ShlBWDiJDfJPPig9 elisendaortiz@gmail.com."
 
 cqt_reporting_deploy_key_path: "{{ cqt_reporting_app_home }}/.ssh/id_rsa"
 cqt_reporting_known_hosts_path: "{{ cqt_reporting_app_home }}/.ssh/known_hosts"
@@ -60,6 +66,8 @@ cqt_reporting_cron_hour: "16"
 cqt_reporting_telegram_enabled: true
 cqt_reporting_telegram_bot_token: ""
 cqt_reporting_telegram_chat_id: ""
+cqt_reporting_slack_enabled: false
+cqt_reporting_slack_webhook_url: ""
 
 cqt_reporting_git_commit_name: "CQT Reporting Bot"
 cqt_reporting_git_commit_email: "cqt-reporting-bot@example.com"
